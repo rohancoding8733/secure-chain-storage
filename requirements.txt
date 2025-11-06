@@ -1,0 +1,6 @@
+web3==6.20.0
+py-solc-x==2.0.3
+cryptography==43.0.3
+ipfshttpclient==0.8.0a2
+python-dotenv==1.0.1
+Pillow==10.4.0
