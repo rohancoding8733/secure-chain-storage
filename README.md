@@ -1,195 +1,107 @@
-# Secure File Storage with AES-256 + IPFS + Local Ethereum (Ganache) — Tkinter GUI
+﻿<div align="center">
 
-This project is a **local demo** that encrypts files with AES-256-GCM, uploads the encrypted bytes to **IPFS**, and stores file metadata + access control on a local **Ethereum** blockchain (Ganache). A simple **Tkinter** desktop app lets you upload, verify, and download+decrypt files.
+  <h1>Secure Chain Storage</h1>
 
-> **What the chain stores:** filename, owner address, IPFS CID for the encrypted file, and the SHA-256 hash of the **plaintext**.  
-> **Access control:** Only the owner (uploader) or addresses granted by owner can read metadata (get CID) and thus download via the app.  
-> **Integrity:** On download, the app recomputes SHA-256 of the decrypted bytes and compares with the on-chain hash.
+  <p><b>AES-256 + IPFS + Ethereum (Ganache)</b><br/>
+  Encrypt locally • Store on IPFS • Prove & control access on-chain</p>
 
----
+  <!-- Badges -->
+  <p>
+    <a href="https://www.python.org/"><img alt="Python" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white"></a>
+    <a href="#"><img alt="Tkinter" src="https://img.shields.io/badge/GUI-Tkinter-5A5A5A"></a>
+    <a href="https://ipfs.tech/"><img alt="IPFS" src="https://img.shields.io/badge/Storage-IPFS-65C2CB?logo=ipfs&logoColor=white"></a>
+    <a href="https://ethereum.org/"><img alt="Ethereum" src="https://img.shields.io/badge/Chain-Ganache%20(Local)-F6C343?logo=ethereum&logoColor=white"></a>
+    <a href="#"><img alt="Solidity" src="https://img.shields.io/badge/Solidity-0.8.x-363636?logo=solidity&logoColor=white"></a>
+    <a href="https://github.com/rohancoding8733/secure-chain-storage/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/badge/License-MIT-2ea44f"></a>
+  </p>
 
-## 0) Prerequisites (all free)
-
-- **Python 3.10+** (preferably 3.11)
-- **Node.js** (only if you choose to install the Ganache Desktop via Node; GUI installer also available)
-- **Ganache** (Desktop app recommended) — Local Ethereum test network  
-  Download: https://archive.trufflesuite.com/ganache/ (or search “Ganache download”)
-- **Go-IPFS** (IPFS node) — Install & run a local IPFS daemon  
-  Download: https://docs.ipfs.tech/install/ (choose your OS)
-
-> On Windows, allow both tools through your firewall on first run.
-
----
-
-## 1) Start your local services
-
-### 1.1 Start Ganache
-- Launch **Ganache** (GUI).
-- Create a **New Workspace**; set the RPC server to `http://127.0.0.1:7545` (default).
-- Copy **one account's Private Key** and **Address** — you'll put these in `.env`.
-
-> Chain ID is usually `1337` or `5777` depending on Ganache version — the code reads it dynamically.
-
-### 1.2 Start IPFS
-Open a terminal and run:
-```bash
-ipfs init   # only once
-ipfs daemon
-```
-The HTTP API will listen on `/ip4/127.0.0.1/tcp/5001` by default.
+  <!-- Hero (we'll add a real screenshot next step) -->
+  <img alt="App Screenshot" src="docs/demo-screenshot.png" width="720" />
+</div>
 
 ---
 
-## 2) Set up the project
+## Table of Contents
+- [What this is](#what-this-is)
+- [How it works (one glance)](#how-it-works-one-glance)
+- [Features](#features)
+- [Setup (Windows)](#setup-windows)
+- [Run the app](#run-the-app)
+- [Usage](#usage)
+- [Troubleshooting](#troubleshooting)
+- [Security notes](#security-notes)
+- [License](#license)
 
-```bash
-# 2.1 — create a virtualenv (recommended)
+---
+
+## What this is
+A desktop app that:
+- 🔐 Encrypts files locally with **AES-256-GCM**
+- ☁️ Stores the encrypted bytes on **IPFS**
+- 🧾 Records file metadata (owner, filename, CID, SHA-256) on **Ethereum** (local Ganache)
+- 👤 Lets the owner **grant/revoke** access to on-chain metadata
+
+## How it works (one glance)
+File ──► AES-256-GCM (local) ──► Encrypted bytes
+│
+├──► IPFS upload ──► CID
+│
+└──► Ethereum (Ganache): { owner, filename, CID, sha256 }**fileId = sha256( CID + sha256(plaintext) )**
+
+## Features
+- Local-only (free to run)
+- Upload → Encrypt → IPFS → On-chain record
+- Download → Decrypt → Integrity verify
+- Access control (owner can grant/revoke)
+
+## Setup (Windows)
+`powershell
+# Python venv
 python -m venv .venv
-# Windows:
-.\.venv\Scripts\activate
-# macOS/Linux:
-source .venv/bin/activate
-
-# 2.2 — install dependencies
+.\.venv\Scripts\Activate
 pip install -r requirements.txt
-```
+pip install requests cryptography
 
-Create `.env` from example and fill it:
-```bash
-copy .env.example .env       # Windows
-# or
-cp .env.example .env         # macOS/Linux
-```
+# Local services
+# - Start Ganache (GUI) at http://127.0.0.1:7545
+# - First time IPFS:  ipfs init
+# - Run IPFS daemon: ipfs daemon
 
-Edit `.env` and set:
-```
-GANACHE_URL=http://127.0.0.1:7545
-PRIVATE_KEY=0x...from Ganache...
-ACCOUNT_ADDRESS=0x...matching the key...
-IPFS_API=/ip4/127.0.0.1/tcp/5001
-```
-
----
-
-## 3) Deploy the smart contract (Python-only)
-
-We compile Solidity with **py-solc-x** and deploy with **web3.py**.
-
-```bash
+# Environment (copy the template)
+copy .env.example .env
+# Fill PRIVATE_KEY and ACCOUNT_ADDRESS from a funded Ganache account
+# Deploy contract (run again if you reset Ganache)
 python deploy_contract.py
-```
-You should see:
-```
-Deployed FileRegistry at: 0xABCDEF...
-```
-This address is saved to `build/FileRegistry.json` so the app can use it.
 
-> If you change the contract, re-run the deploy script.
-
----
-
-## 4) Run the desktop app
-
-```bash
+# Launch GUI
 python app.py
-```
 
-### Upload flow
-1. Pick a file.
-2. Enter a password (used to derive a 256-bit AES key via PBKDF2-HMAC-SHA256).
-3. App encrypts the file (AES-256-GCM), computes **SHA-256 of the plaintext**, uploads encrypted bytes to IPFS, then writes metadata to the chain.
-4. The app prints your **fileId** (keccak(cid + sha256)), the **CID**, and the hash.
+Usage
 
-> **Keep the password safe.** Without it, the downloaded data is useless.
+Upload File → Encrypts locally → uploads to IPFS → writes metadata on-chain → shows CID + fileId + sha256
 
-### Download flow
-1. Paste `fileId` in hex (with or without `0x`).
-2. The contract checks your access. If allowed, the app fetches the CID + hash, downloads encrypted bytes from IPFS, asks for your password, decrypts, verifies integrity, and saves the file.
+Verify by File ID → Shows on-chain metadata (owner, filename, CID, sha256)
 
----
+Download + Decrypt → Fetches from IPFS → asks your password → decrypts → verifies integrity
 
-## 5) Granting / revoking access
+Troubleshooting
 
-The UI keeps the demo minimal. Use these helper functions programmatically:
+“Access denied” → Use the owner account (from .env) or grant access.
 
-```python
-from blockchain import grant_access, revoke_access, make_file_id
+“Nonce/replacement underpriced” → Restart Ganache once, then redeploy.
 
-file_id = make_file_id("<CID>", "<SHA256_HEX>")
-grant_access(file_id, "0xFriendAddress")
-revoke_access(file_id, "0xFriendAddress")
-```
+“Out of gas/invalid opcode” → Don’t re-use the same fileId (duplicates revert).
 
-> Only the **owner** (uploader account) can call these.
+“IPFS error” → Ensure ipfs daemon is running and .env has IPFS_API=http://127.0.0.1:5001.
 
----
+“cryptography not found” → pip install cryptography.
 
-## 6) How IDs & integrity work
+Security notes
 
-- `fileId = keccak256(str(cid) + str(sha256_plaintext_hex))` — deterministic identifier.
-- On-chain we store: `owner`, `filename`, `cid`, `fileHash` (bytes32).
-- On download, we compute SHA-256 of the **decrypted** bytes and compare with on-chain `fileHash` to detect corruption/tampering.
+Never commit your real .env (this repo uses .gitignore and has .env.example).
 
----
+Ganache keys are for local testing only.
 
-## 7) Troubleshooting
+License
 
-- **Cannot connect to Ethereum**: ensure Ganache is running on `127.0.0.1:7545`. Check `.env`.
-- **ACCOUNT_ADDRESS mismatch**: the deploy & tx signing uses `PRIVATE_KEY`; ensure `ACCOUNT_ADDRESS` is that key’s address.
-- **IPFS errors**: run `ipfs daemon`. If your API listens elsewhere, update `IPFS_API` in `.env`.
-- **Contract not deployed**: run `python deploy_contract.py` before `app.py`.
-- **Solidity not found**: the deploy script installs `solc 0.8.20` for you. If corporate proxies block it, install manually.
-
----
-
-## 8) Security notes (for a real product)
-- Store only **encrypted** data off-chain. Never store plaintext or passwords.
-- Use a stronger KDF (Argon2id) and increase iterations depending on UX.
-- Consider **hardware wallets** for keys, and use proper **access logs**.
-- Move from local IPFS to a pinned/IPFS cluster, and from Ganache to testnets/mainnet with audited contracts.
-- Add **rate limits**, **password strength checks**, and **secure secret storage**.
-
----
-
-## 9) Project layout
-
-```
-secure-chain-storage/
-├── app.py
-├── blockchain.py
-├── crypto_utils.py
-├── deploy_contract.py
-├── ipfs_utils.py
-├── requirements.txt
-├── .env.example
-├── build/
-│   └── FileRegistry.json  # created after deploy
-└── contracts/
-    └── FileRegistry.sol
-```
-
----
-
-## 10) Quick demo script (optional)
-
-```python
-# demo.py — Upload then download immediately (headless)
-from dotenv import load_dotenv
-from ipfs_utils import get_client, add_bytes, get_bytes
-from crypto_utils import encrypt_file, decrypt_to_bytes, sha256_hex
-from blockchain import make_file_id, add_file_record, get_file_meta
-
-load_dotenv()
-password = "testpass123"
-
-enc, digest = encrypt_file("sample.pdf", password)
-client = get_client()
-cid = add_bytes(client, enc, filename="sample.pdf.enc")
-fid = make_file_id(cid, digest)
-add_file_record(fid, "sample.pdf", cid, digest)
-
-owner, fname, cid2, h = get_file_meta(fid)
-enc2 = get_bytes(client, cid2)
-pt = decrypt_to_bytes(enc2, password)
-print("Integrity:", sha256_hex(pt) == h.hex())
-```
+MIT — free to use and adapt.
