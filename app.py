@@ -1,164 +1,319 @@
-import os, tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
-from dotenv import load_dotenv
+# app.py — Modern UI with ttkbootstrap (thread-safe prompts)
+import os
+import threading
+import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog  # use simpledialog for all prompts
 
+from dotenv import load_dotenv
+from ttkbootstrap import Window, Style
+from ttkbootstrap.constants import *
+
+# project imports
 from crypto_utils import encrypt_file, decrypt_to_bytes, sha256_hex
 from ipfs_utils import upload_to_ipfs, download_from_ipfs
 from blockchain import make_file_id, add_file_record, get_file_meta
 
 load_dotenv()
 
-APP_TITLE = "Secure Chain Storage (AES + IPFS + Ethereum)"
+APP_TITLE = "Secure Chain Storage — AES + IPFS + Ethereum"
 
-class App(tk.Tk):
+
+class App(Window):
     def __init__(self):
-        super().__init__()
+        super().__init__(themename="darkly")  # try: "cosmo", "solar", "superhero", "flatly"
         self.title(APP_TITLE)
-        self.geometry("720x520")
-        self.minsize(720, 520)
-        self._ui()
+        self.geometry("860x580")
+        self.minsize(820, 540)
 
-    def _ui(self):
-        pad = {"padx": 10, "pady": 10}
+        # State
+        self._busy = False
+        self.current_cid = None
+        self.current_file_id = None
+        self.current_sha = None
 
-        ttk.Label(self, text="Secure File Storage (Local Demo)", font=("Segoe UI", 16, "bold")).pack(**pad)
-        ttk.Label(self, text="Encrypt with AES-256, store on IPFS, register on local Ethereum (Ganache).").pack(**pad)
+        self._build_ui()
 
-        bar = ttk.Frame(self); bar.pack(fill="x", **pad)
-        ttk.Button(bar, text="Upload File",        command=self.upload_flow).grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        ttk.Button(bar, text="Download + Decrypt", command=self.download_flow).grid(row=0, column=1, padx=5, pady=5, sticky="w")
-        ttk.Button(bar, text="Verify by File ID",  command=self.verify_flow).grid(row=0, column=2, padx=5, pady=5, sticky="w")
-        ttk.Button(bar, text="Grant Access",       command=self._not_implemented).grid(row=1, column=0, padx=5, pady=5, sticky="w")
-        ttk.Button(bar, text="Revoke Access",      command=self._not_implemented).grid(row=1, column=1, padx=5, pady=5, sticky="w")
+    # ---------- UI ----------
+    def _build_ui(self):
+        # Header
+        header = tk.Frame(self)
+        header.pack(fill="x", padx=12, pady=(12, 6))
 
-        ttk.Separator(self, orient="horizontal").pack(fill="x", pady=8)
-        self.out = tk.Text(self, height=18, wrap="word"); self.out.pack(fill="both", expand=True, padx=10, pady=10)
-        self.status = ttk.Label(self, text="Ready.", anchor="w"); self.status.pack(fill="x")
+        title = tk.Label(
+            header,
+            text="Secure Chain Storage",
+            font=("Segoe UI", 18, "bold"),
+            anchor="w",
+        )
+        title.pack(side="left")
 
-    # --- helpers ---
-    def log(self, s: str):
-        self.out.insert("end", s + "\n"); self.out.see("end"); self.status.config(text=s); self.update_idletasks()
+        # Theme switcher
+        theme_btn = tk.Menubutton(header, text="Theme", relief="raised")
+        menu = tk.Menu(theme_btn, tearoff=0)
+        theme_btn["menu"] = menu
+        for th in ("darkly", "superhero", "cyborg", "solar", "cosmo", "flatly", "litera", "pulse"):
+            menu.add_command(label=th, command=lambda t=th: self._switch_theme(t))
+        theme_btn.pack(side="right", padx=6)
 
-    def ask_password(self, prompt="Enter a password (keep it safe!)"):
-        pw = simpledialog.askstring("Password", prompt, show="*")
-        if not pw: messagebox.showwarning("Cancelled", "Password required.")
-        return pw
+        # Action bar
+        bar = tk.Frame(self)
+        bar.pack(fill="x", padx=12, pady=(0, 8))
 
-    def prompt(self, title):
-        win = tk.Toplevel(self); win.title(title); win.grab_set()
-        v = tk.StringVar(); e = tk.Entry(win, textvariable=v, width=64); e.pack(padx=10, pady=10); e.focus_set()
-        out = {"val": None}
-        ttk.Button(win, text="OK", command=lambda: (out.update(val=v.get().strip()), win.destroy())).pack(pady=8)
-        self.wait_window(win); return out["val"]
+        # Buttons call orchestration methods that gather input on main thread,
+        # then spawn a worker thread for heavy work.
+        self.btn_upload = tk.Button(
+            bar, text="Upload File", command=self.upload_flow,
+            padx=10, pady=6, bg="#0d6efd", fg="white", relief="raised"
+        )
+        self.btn_download = tk.Button(
+            bar, text="Download + Decrypt", command=self.download_flow,
+            padx=10, pady=6, bg="#198754", fg="white", relief="raised"
+        )
+        self.btn_verify = tk.Button(
+            bar, text="Verify by File ID", command=self.verify_flow,
+            padx=10, pady=6, bg="#0dcaf0", fg="black", relief="raised"
+        )
+        self.btn_upload.pack(side="left", padx=4)
+        self.btn_download.pack(side="left", padx=4)
+        self.btn_verify.pack(side="left", padx=4)
 
-    # --- flows ---
+        # Copy shortcuts for last results
+        self.btn_copy_cid = tk.Button(bar, text="Copy CID",
+                                      command=lambda: self._copy_clip(self.current_cid), state="disabled")
+        self.btn_copy_fid = tk.Button(bar, text="Copy File ID",
+                                      command=lambda: self._copy_clip(self.current_file_id), state="disabled")
+        self.btn_copy_sha = tk.Button(bar, text="Copy SHA-256",
+                                      command=lambda: self._copy_clip(self.current_sha), state="disabled")
+        self.btn_copy_cid.pack(side="right", padx=4)
+        self.btn_copy_fid.pack(side="right", padx=4)
+        self.btn_copy_sha.pack(side="right", padx=4)
+
+        # Separator
+        sep = tk.Frame(self, height=1, bg="#2b2f32")
+        sep.pack(fill="x", padx=12, pady=6)
+
+        # Log area
+        self.log = tk.Text(self, height=18, wrap="word", relief="flat", bd=0)
+        self.log.configure(bg="#1e2124", fg="#e6e6e6", insertbackground="#e6e6e6")
+        self.log.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+
+        # Progress + status bar
+        bottom = tk.Frame(self)
+        bottom.pack(fill="x", padx=12, pady=(0, 10))
+
+        import ttkbootstrap as tb
+        self.progress = tb.Progressbar(bottom, mode="indeterminate", bootstyle=INFO)
+        self.progress.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        self.status = tk.Label(bottom, text="Ready.", anchor="e")
+        self.status.pack(side="right")
+
+    def _switch_theme(self, name: str):
+        Style(theme=name)
+        self.update_idletasks()
+
+    # ---------- helpers ----------
+    def _set_busy(self, busy: bool):
+        self._busy = busy
+        state = "disabled" if busy else "normal"
+        for b in (self.btn_upload, self.btn_download, self.btn_verify):
+            b.configure(state=state)
+        if busy:
+            self.progress.start(10)
+            self._status("Working...")
+        else:
+            self.progress.stop()
+            self._status("Ready.")
+
+    def _status(self, s: str):
+        self.status.config(text=s)
+        self.status.update_idletasks()
+
+    def _log(self, s: str):
+        self.log.insert("end", s + "\n")
+        self.log.see("end")
+        self.log.update_idletasks()
+
+    def _copy_clip(self, text):
+        if not text:
+            messagebox.showwarning("Nothing to copy", "No value is available yet.")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._status("Copied to clipboard")
+
+    # ---------- flows (thread-safe) ----------
     def upload_flow(self):
+        """Gather inputs on main thread, then run worker in background."""
         path = filedialog.askopenfilename(title="Select file to encrypt & upload")
-        if not path: return
+        if not path:
+            return
         filename = os.path.basename(path)
-        pw = self.ask_password()
-        if not pw: return
+        pw = simpledialog.askstring("Password for encryption", "Password:", show="*")
+        if not pw:
+            messagebox.showwarning("Cancelled", "Password required.")
+            return
 
-        try:
-            self.log(f"[1/4] Encrypting {filename} with AES-256-GCM...")
-            enc_bytes, sha_hex = encrypt_file(path, pw)     # your crypto_utils returns (encrypted, sha_hex)
-            self.log(f"    SHA-256 (plaintext) = {sha_hex}")
+        def worker():
+            try:
+                self._set_busy(True)
+                # 1) Encrypt
+                self._log(f"[1/4] Encrypting {filename} with AES-256-GCM...")
+                enc_bytes, sha_hex = encrypt_file(path, pw)
+                self.current_sha = sha_hex
+                self._log(f"    SHA-256 (plaintext) = {sha_hex}")
 
-            self.log("[2/4] Uploading encrypted bytes to IPFS...")
-            cid = upload_to_ipfs(enc_bytes)                  # <-- no get_client, direct REST call
-            self.log(f"    IPFS CID = {cid}")
+                # 2) Upload to IPFS
+                self._log("[2/4] Uploading encrypted bytes to IPFS...")
+                cid = upload_to_ipfs(enc_bytes)
+                self.current_cid = cid
+                self._log(f"    IPFS CID = {cid}")
 
-            self.log("[3/4] Computing fileId (keccak of cid+sha256)...")
-            file_id = make_file_id(cid, sha_hex)
+                # 3) Compute fileId
+                self._log("[3/4] Computing fileId (sha256(cid + sha256))...")
+                file_id = make_file_id(cid, sha_hex)
+                self.current_file_id = "0x" + file_id.hex()
 
-            self.log("[4/4] Writing metadata to blockchain...")
-            receipt = add_file_record(file_id, filename, cid, sha_hex)
-            self.log(f"    Tx mined in block {receipt['blockNumber']}.")
+                # 4) Write on-chain
+                self._log("[4/4] Writing metadata to blockchain...")
+                receipt = add_file_record(file_id, filename, cid, sha_hex)
+                blk = receipt.get("blockNumber", "?")
+                self._log(f"    Tx mined in block {blk} ✔")
 
-            self.log(
-                "✔ Done!\n"
-                f"File ID (hex): {file_id.hex()}\n"
-                f"Filename: {filename}\n"
-                f"CID: {cid}\n"
-                f"SHA-256: {sha_hex}\n"
-                "Keep the password safe — it's required to decrypt.\n"
-            )
-        except Exception as e:
-            messagebox.showerror("Error", str(e)); self.log(f"Error: {e}")
+                # Enable quick-copy buttons
+                self.btn_copy_cid.configure(state="normal")
+                self.btn_copy_fid.configure(state="normal")
+                self.btn_copy_sha.configure(state="normal")
+
+                self._log(
+                    "\n✅ Upload complete!\n"
+                    f"File ID (hex): {self.current_file_id}\n"
+                    f"CID:          {cid}\n"
+                    f"SHA-256:      {sha_hex}\n"
+                    "Keep the password safe — it is required to decrypt.\n"
+                )
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+                self._log(f"Error: {e}")
+            finally:
+                self._set_busy(False)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def download_flow(self):
-        file_id_hex = self.prompt("Paste the fileId (0x... or hex)")
-        if not file_id_hex: return
-        fid = file_id_hex[2:] if file_id_hex.lower().startswith("0x") else file_id_hex
+        """Gather fileId & password on main thread, then run worker."""
+        file_id_hex = simpledialog.askstring("Download + Decrypt", "Paste the fileId (0x... or hex):")
+        if not file_id_hex:
+            return
+        fid = file_id_hex.lower().strip()
+        if fid.startswith("0x"):
+            fid = fid[2:]
         try:
             file_id = bytes.fromhex(fid)
         except ValueError:
-            messagebox.showerror("Error", "Invalid hex for fileId"); return
+            messagebox.showerror("Error", "Invalid hex for fileId")
+            return
 
-        try:
-            self.log("Querying blockchain for metadata ...")
-            meta = get_file_meta(file_id)
+        pw = simpledialog.askstring("Password to decrypt", "Password:", show="*")
+        if not pw:
+            messagebox.showwarning("Cancelled", "Password required.")
+            return
 
-            # Support both dict (new) and tuple (old)
-            if isinstance(meta, dict):
-                owner, filename, cid, sha_on_chain = meta["owner"], meta["filename"], meta["cid"], meta["fileHashHex"].removeprefix("0x")
-            else:
-                owner, filename, cid, filehash_bytes = meta
-                sha_on_chain = filehash_bytes.hex()
+        def worker():
+            try:
+                self._set_busy(True)
+                # Read metadata
+                self._log("Querying blockchain for metadata ...")
+                meta = get_file_meta(file_id)
+                if isinstance(meta, dict):
+                    owner, filename, cid, sha_on_chain = (
+                        meta["owner"],
+                        meta["filename"],
+                        meta["cid"],
+                        meta["fileHashHex"].removeprefix("0x"),
+                    )
+                else:
+                    owner, filename, cid, filehash_bytes = meta
+                    sha_on_chain = filehash_bytes.hex()
 
-            self.log(f"  Owner: {owner}\n  Filename: {filename}\n  CID: {cid}\n  SHA-256: {sha_on_chain}")
+                self._log(f"  Owner: {owner}\n  Filename: {filename}\n  CID: {cid}\n  SHA-256: {sha_on_chain}")
 
-            self.log("Fetching encrypted bytes from IPFS...")
-            enc_bytes = download_from_ipfs(cid)              # <-- direct REST call
+                # IPFS
+                self._log("Fetching encrypted bytes from IPFS...")
+                enc_bytes = download_from_ipfs(cid)
 
-            pw = self.ask_password("Enter password to decrypt:")
-            if not pw: return
-            self.log("Decrypting...")
-            plaintext = decrypt_to_bytes(enc_bytes, pw)
+                # Decrypt
+                self._log("Decrypting ...")
+                plaintext = decrypt_to_bytes(enc_bytes, pw)
 
-            sha_now = sha256_hex(plaintext)
-            ok = (sha_now.lower() == sha_on_chain.lower())
-            self.log(f"Integrity check: computed SHA-256 = {sha_now} -> {'OK' if ok else 'MISMATCH'}")
+                # Integrity
+                sha_now = sha256_hex(plaintext)
+                ok = (sha_now.lower() == sha_on_chain.lower())
+                self._log(f"Integrity check: computed SHA-256 = {sha_now} -> {'OK' if ok else 'MISMATCH'}")
 
-            save_to = filedialog.asksaveasfilename(defaultextension="", initialfile=filename, title="Save decrypted file as...")
-            if save_to:
-                with open(save_to, "wb") as f: f.write(plaintext)
-                self.log(f"Saved decrypted file to {save_to}")
+                # Save
+                out = filedialog.asksaveasfilename(
+                    title="Save decrypted file as", initialfile=filename or "decrypted_output.bin"
+                )
+                if not out:
+                    self._log("Save cancelled.")
+                    return
+                with open(out, "wb") as f:
+                    f.write(plaintext)
+                self._log(f"Saved decrypted file to: {out}")
                 if not ok:
-                    messagebox.showwarning("Integrity mismatch", "Decrypted file saved, but hash did not match on-chain record.")
-        except Exception as e:
-            messagebox.showerror("Error", str(e)); self.log(f"Error: {e}")
+                    messagebox.showwarning(
+                        "Integrity mismatch",
+                        "Decrypted file saved, but hash did not match on-chain record.",
+                    )
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+                self._log(f"Error: {e}")
+            finally:
+                self._set_busy(False)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def verify_flow(self):
-        file_id_hex = self.prompt("Paste the fileId (0x... or hex) to view metadata.")
-        if not file_id_hex: return
-        fid = file_id_hex[2:] if file_id_hex.lower().startswith("0x") else file_id_hex
+        """Gather fileId on main thread, then run worker to query metadata."""
+        file_id_hex = simpledialog.askstring("Verify by File ID", "Paste the fileId (0x... or hex):")
+        if not file_id_hex:
+            return
+        fid = file_id_hex.strip()
+        if fid.lower().startswith("0x"):
+            fid = fid[2:]
         try:
             file_id = bytes.fromhex(fid)
         except ValueError:
-            messagebox.showerror("Error", "Invalid hex for fileId"); return
+            messagebox.showerror("Error", "Invalid hex for fileId")
+            return
 
-        try:
-            meta = get_file_meta(file_id)
-            if isinstance(meta, dict):
-                owner, filename, cid, sha_hex = meta["owner"], meta["filename"], meta["cid"], meta["fileHashHex"]
-            else:
-                owner, filename, cid, filehash_bytes = meta
-                sha_hex = "0x" + filehash_bytes.hex()
+        def worker():
+            try:
+                self._set_busy(True)
+                meta = get_file_meta(file_id)
+                if isinstance(meta, dict):
+                    owner, filename, cid, sha_hex = meta["owner"], meta["filename"], meta["cid"], meta["fileHashHex"]
+                else:
+                    owner, filename, cid, filehash_bytes = meta
+                    sha_hex = "0x" + filehash_bytes.hex()
 
-            self.log(
-                "Metadata on-chain:\n"
-                f"Owner:   {owner}\n"
-                f"Filename:{filename}\n"
-                f"CID:     {cid}\n"
-                f"SHA-256: {sha_hex}\n"
-                "(Downloading requires access and password.)\n"
-            )
-        except Exception as e:
-            messagebox.showerror("Error", str(e)); self.log(f"Error: {e}")
+                self._log(
+                    "Metadata on-chain:\n"
+                    f"Owner:   {owner}\n"
+                    f"Filename:{filename}\n"
+                    f"CID:     {cid}\n"
+                    f"SHA-256: {sha_hex}\n"
+                    "(Downloading requires access and password.)\n"
+                )
+            except Exception as e:
+                messagebox.showerror("Error", f"Verify failed: {e}")
+                self._log(f"Error: {e}")
+            finally:
+                self._set_busy(False)
 
-    def _not_implemented(self):
-        messagebox.showinfo("Note", "Use command-line helpers in blockchain.py to grant/revoke for now.")
+        threading.Thread(target=worker, daemon=True).start()
+
 
 if __name__ == "__main__":
     App().mainloop()
